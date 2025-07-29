@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract AAAStaking is ERC20, Ownable {
+    using SafeERC20 for IERC20;
+
+    IERC20 public usdt; // Contrat USDT
+    uint256 public apy = 14; // APY annuel en %
+    uint256 public lockDuration; // Durée du lock en secondes
+
+    mapping(address => uint256) public stakes;
+    mapping(address => uint256) public userUnlockTime;
+
+    constructor(address _usdt, uint256 _lockDuration) ERC20("AAA Token", "AAA") Ownable(msg.sender) {
+        require(_usdt != address(0), "USDT address required");
+        require(_lockDuration > 0, "Lock duration must be greater than 0");
+
+        usdt = IERC20(_usdt);
+        lockDuration = _lockDuration;
+    }
+
+    function deposit(uint256 amount) external {
+        require(amount > 0, "Amount must be greater than 0");
+
+        usdt.safeTransferFrom(msg.sender, address(this), amount);
+        _mint(msg.sender, amount);
+
+        stakes[msg.sender] += amount;
+        // Chaque dépôt "repousse" la date d'unlock pour ce montant
+        if (userUnlockTime[msg.sender] < block.timestamp + lockDuration) {
+            userUnlockTime[msg.sender] = block.timestamp + lockDuration;
+        }
+    }
+
+    function redeem(uint256 amount) external {
+        require(block.timestamp >= userUnlockTime[msg.sender], "Lock period not ended");
+        require(balanceOf(msg.sender) >= amount, "Not enough AAA");
+
+        uint256 durationInYears = lockDuration / 365 days; // Calcul en années
+        uint256 usdtAmount = amount + (amount * apy * durationInYears) / 100;
+
+        _burn(msg.sender, amount);
+        stakes[msg.sender] -= amount;
+        usdt.safeTransfer(msg.sender, usdtAmount);
+
+        if (stakes[msg.sender] == 0) {
+            userUnlockTime[msg.sender] = 0;
+        }
+    }
+
+    function transferStake(address to, uint256 amount) external {
+        require(stakes[msg.sender] >= amount, "Not enough stake");
+
+        stakes[msg.sender] -= amount;
+        stakes[to] += amount;
+
+        _transfer(msg.sender, to, amount);
+
+        // Le destinataire hérite du même unlockTime ou garde le plus long
+        if (userUnlockTime[to] < userUnlockTime[msg.sender]) {
+            userUnlockTime[to] = userUnlockTime[msg.sender];
+        }
+
+        if (stakes[msg.sender] == 0) {
+            userUnlockTime[msg.sender] = 0;
+        }
+    }
+
+    function timeUntilUnlock(address user) external view returns (uint256) {
+        if (block.timestamp >= userUnlockTime[user]) {
+            return 0;
+        } else {
+            return userUnlockTime[user] - block.timestamp;
+        }
+    }
+}
